@@ -97,11 +97,13 @@ package starling.assets
      *  var appDir:File = File.applicationDirectory;
      *  
      *  var redAssets:AssetManager = new AssetManager();
-     *  manager.enqueueSingle(appDir.resolvePath("textures/red/", "redAssets");
+     *  redAssets.enqueueSingle(appDir.resolvePath("textures/red/"));
      *  
      *  var greenAssets:AssetManager = new AssetManager();
-     *  manager.enqueueSingle(appDir.resolvePath("textures/green/", "greenAssets");
+     *  greenAssets.enqueueSingle(appDir.resolvePath("textures/green/"));
      *  
+     *  manager.enqueueSingle(redAssets, "redAssets");
+     *  manager.enqueueSingle(greenAssets, "greenAssets");
      *  manager.loadQueue(...); // loads both "red" and "green" assets
      *  
      *  // ... later, remove all "red" assets together
@@ -310,15 +312,16 @@ package starling.assets
         /** Loads all enqueued assets asynchronously. The 'onComplete' callback will be executed
          *  once all assets have been loaded - even when there have been errors, which are
          *  forwarded to the optional 'onError' callback. The 'onProgress' function will be called
-         *  with a 'ratio' between '0.0' and '1.0' and is also optional.
+         *  with a 'ratio' between '0.0' and '1.0' and is also optional. Furthermore, all
+         *  parameters of all the callbacks are optional.
          *
          *  <p>When you call this method, the manager will save a reference to "Starling.current";
          *  all textures that are loaded will be accessible only from within this instance. Thus,
          *  if you are working with more than one Starling instance, be sure to call
          *  "makeCurrent()" on the appropriate instance before processing the queue.</p>
          *
-         *  @param onComplete   <code>function(manager:AssetManager):void;</code> - parameter is optional!
-         *  @param onError      <code>function(error:String):void;</code>
+         *  @param onComplete   <code>function(manager:AssetManager):void;</code>
+         *  @param onError      <code>function(error:String, asset:AssetReference):void;</code>
          *  @param onProgress   <code>function(ratio:Number):void;</code>
          */
         public function loadQueue(onComplete:Function,
@@ -377,12 +380,12 @@ package starling.assets
                 }
             }
 
-            function onAssetLoaded(name:String=null, asset:Object=null):void
+            function onAssetLoaded(name:String=null, asset:Object=null, type:String=null):void
             {
                 if (canceled && asset) disposeAsset(asset);
                 else
                 {
-                    if (name && asset) addAsset(name, asset);
+                    if (name && asset) addAsset(name, asset, type);
                     numComplete++;
 
                     if (numComplete == numAssets)
@@ -394,11 +397,11 @@ package starling.assets
                 }
             }
 
-            function onAssetLoadError(error:String):void
+            function onAssetLoadError(error:String, asset:AssetReference):void
             {
                 if (!canceled)
                 {
-                    execute(onError, error);
+                    execute(onError, error, asset);
                     onAssetLoaded();
                 }
             }
@@ -447,34 +450,34 @@ package starling.assets
             helper:AssetFactoryHelper, onComplete:Function, onProgress:Function,
             onError:Function, onIntermediateError:Function):void
         {
-            var assetCount:int = queue.length;
-            var asset:AssetReference = queue[index];
+            var referenceCount:int = queue.length;
+            var reference:AssetReference = queue[index];
             progressRatios[index] = 0;
 
-            if (asset.data is String || ("url" in asset.data && asset.data["url"]))
-                _dataLoader.load(asset.data, onLoadComplete, onLoadError, onLoadProgress);
-            else if (asset.data is AssetManager)
-                (asset.data as AssetManager).loadQueue(onManagerComplete, onIntermediateError, onLoadProgress);
+            if (reference.url)
+                _dataLoader.load(reference.url, onLoadComplete, onLoadError, onLoadProgress);
+            else if (reference.data is AssetManager)
+                (reference.data as AssetManager).loadQueue(onManagerComplete, onIntermediateError, onLoadProgress);
             else
-                setTimeout(onLoadComplete, 1, asset.data);
+                setTimeout(onLoadComplete, 1, reference.data);
 
-            function onLoadComplete(data:Object, mimeType:String=null):void
+            function onLoadComplete(data:Object, mimeType:String=null,
+                                    name:String=null, extension:String=null):void
             {
                 if (_starling) _starling.makeCurrent();
 
                 onLoadProgress(1.0);
-                asset.data = data;
-                asset.mimeType ||= mimeType;
 
-                if (transformAsset(asset))
-                {
-                    var assetFactory:AssetFactory = getFactoryFor(asset);
-                    if (assetFactory == null)
-                        execute(onAnyError, "Warning: no suitable factory found for '" + asset.name + "'");
-                    else
-                        assetFactory.create(asset, helper, onComplete, onCreateError);
-                }
-                else onComplete();
+                if (data)      reference.data = data;
+                if (name)      reference.name = name;
+                if (extension) reference.extension = extension;
+                if (mimeType)  reference.mimeType = mimeType;
+
+                var assetFactory:AssetFactory = getFactoryFor(reference);
+                if (assetFactory == null)
+                    execute(onAnyError, "Warning: no suitable factory found for '" + reference.name + "'");
+                else
+                    assetFactory.create(reference, helper, onFactoryComplete, onFactoryError);
             }
 
             function onLoadProgress(ratio:Number):void
@@ -482,9 +485,9 @@ package starling.assets
                 progressRatios[index] = ratio;
 
                 var totalRatio:Number = 0;
-                var multiplier:Number = 1.0 / assetCount;
+                var multiplier:Number = 1.0 / referenceCount;
 
-                for (var k:int=0; k<assetCount; ++k)
+                for (var k:int=0; k<referenceCount; ++k)
                 {
                     var r:Number = progressRatios[k];
                     if (r > 0) totalRatio += multiplier * r;
@@ -496,23 +499,29 @@ package starling.assets
             function onLoadError(error:String):void
             {
                 onLoadProgress(1.0);
-                execute(onAnyError, "Error loading " + asset.name + ": " + error);
-            }
-
-            function onCreateError(error:String):void
-            {
-                execute(onAnyError, "Error creating " + asset.name + ": " + error);
+                execute(onAnyError, "Error loading " + reference.name + ": " + error);
             }
 
             function onAnyError(error:String):void
             {
                 log(error);
-                execute(onError, error);
+                execute(onError, error, reference);
+            }
+
+            function onFactoryError(error:String):void
+            {
+                execute(onAnyError, "Error creating " + reference.name + ": " + error);
+            }
+
+            function onFactoryComplete(name:String=null, asset:Object=null, type:String=null):void
+            {
+                onComplete(name, asset, type);
+                disposeAsset(reference.data);
             }
 
             function onManagerComplete():void
             {
-                execute(onComplete, asset.name, asset.data);
+                onComplete(reference.name, reference.data);
             }
         }
 
@@ -541,15 +550,6 @@ package starling.assets
                     dispatchEventWith(Event.TEXTURES_RESTORED);
             }
             else _numLostTextures++;
-        }
-
-        /** This method is called directly after asset data has been loaded from a local or remote
-         *  source. Override this method to update the reference in any way (like changing name,
-         *  extension or data) before the asset reference is passed to the respective factory.
-         *  Return <code>false</code> if you don't want to add that asset at all. */
-        protected function transformAsset(asset:AssetReference):Boolean
-        {
-            return true;
         }
 
         // basic accessing methods
