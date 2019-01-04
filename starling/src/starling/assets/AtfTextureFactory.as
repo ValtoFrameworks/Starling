@@ -33,10 +33,13 @@ package starling.assets
                     onComplete(reference.name, texture);
                 };
 
-                var texture:Texture = Texture.fromData(reference.data, reference.textureOptions);
+                var texture:Texture = null;
                 var url:String = reference.url;
 
-                if (url)
+                try { texture = Texture.fromData(reference.data, reference.textureOptions); }
+                catch (e:Error) { onError(e.message); }
+
+                if (url && texture)
                 {
                     texture.root.onRestore = function():void
                     {
@@ -53,6 +56,8 @@ package starling.assets
                         }, onReloadError);
                     };
                 }
+
+                reference.data = null; // prevent closures from keeping reference
             }
 
             function onReloadError(error:String):void
